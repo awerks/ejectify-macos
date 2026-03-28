@@ -1,0 +1,92 @@
+name: Build and Release Ejectify
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Ejectify
+    runs-on: macos-15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Show runner and Xcode info
+        run: |
+          sw_vers
+          ls -1 /Applications | grep Xcode || true
+          xcode-select -p
+          xcodebuild -version || true
+
+      # Adjust this if Ejectify requires a different installed Xcode path
+      - name: Select Xcode
+        run: |
+          if [ -d "/Applications/Xcode.app" ]; then
+            sudo xcode-select -s /Applications/Xcode.app
+          fi
+          xcodebuild -version
+
+      - name: Resolve package dependencies
+        run: |
+          xcodebuild \
+            -project Ejectify.xcodeproj \
+            -scheme Ejectify \
+            -resolvePackageDependencies
+
+      - name: Build Release app
+        run: |
+          xcodebuild \
+            -project Ejectify.xcodeproj \
+            -scheme Ejectify \
+            -configuration Release \
+            -destination 'platform=macOS' \
+            -derivedDataPath DerivedData \
+            clean build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Locate app bundle
+        id: app
+        run: |
+          APP_PATH=$(find DerivedData/Build/Products/Release -maxdepth 1 -name "Ejectify.app" | head -n 1)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "Ejectify.app not found"
+            find DerivedData/Build/Products -maxdepth 3 -type d -name "*.app" || true
+            exit 1
+          fi
+
+          echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
+          echo "zip_path=dist/Ejectify-macOS.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Package app as zip
+        run: |
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent \
+            "${{ steps.app.outputs.app_path }}" \
+            "${{ steps.app.outputs.zip_path }}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ejectify-macOS
+          path: ${{ steps.app.outputs.zip_path }}
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.app.outputs.zip_path }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
